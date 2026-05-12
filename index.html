@@ -1,0 +1,502 @@
+<!DOCTYPE html>
+<html lang="sk">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Aggregated Families Planning</title>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family: Arial, sans-serif; background: #f0f0f0; color: #000; overflow: hidden; }
+  ::-webkit-scrollbar { width: 14px; height: 14px; }
+  ::-webkit-scrollbar-track { background: #f0ede4; }
+  ::-webkit-scrollbar-thumb { background: #b0a898; border: 1px solid #888; }
+  input[type=checkbox], input[type=radio] { cursor: pointer; }
+  input[type=date], select, button { font-family: Arial, sans-serif; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel">
+const { useState, useMemo } = React;
+
+const LINES = Array.from({ length: 10 }, (_, i) => `Line ${i + 1}`);
+const SHIFTS = [
+  { id: "S1", label: "S1 (Morning)" },
+  { id: "S2", label: "S2 (Day)" },
+  { id: "S3", label: "S3 (Night)" },
+];
+const DAY_NAMES = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+const FONT_SIZES = [8, 9, 10, 11, 12, 13];
+
+// ── Reliability category logic ─────────────────────────────────────────────────
+// = 100%  → Green  ✓ Perfect
+// > 100%  → Blue   ↑ Plan set too low
+// 90–99%  → Yellow ⚠ Warning
+// < 90%   → Red    ✗ Critical
+// no plan → Gray   —
+
+function relCategory(actual, plan) {
+  if (plan === 0) return "none";
+  const r = (actual / plan) * 100;
+  if (Math.abs(r - 100) < 0.05) return "perfect";  // exactly 100
+  if (r > 100)  return "over";     // above 100 — plan too low
+  if (r >= 90)  return "warn";
+  return "critical";
+}
+
+function relStyle(cat) {
+  if (cat === "none")     return { background:"#eeeeee", color:"#aaa" };
+  if (cat === "perfect")  return { background:"#c6efce", color:"#276221", fontWeight:"bold" };
+  if (cat === "over")     return { background:"#bdd7ee", color:"#1f4e79", fontWeight:"bold" };  // blue — plan too low
+  if (cat === "warn")     return { background:"#ffeb9c", color:"#9c6500", fontWeight:"bold" };
+  return { background:"#ffc7ce", color:"#9c0006", fontWeight:"bold" };  // critical
+}
+
+const REL_FILTER_OPTIONS = [
+  { value:"all",      label:"All rows" },
+  { value:"perfect",  label:"= 100%  ✓ Perfect" },
+  { value:"over",     label:"> 100%  ↑ Plan too low" },
+  { value:"warn",     label:"90–99%  ⚠ Warning" },
+  { value:"critical", label:"< 90%   ✗ Critical" },
+  { value:"not100",   label:"≠ 100%  (all non-perfect)" },
+];
+
+function relPasses(cat, filter) {
+  if (filter === "all") return true;
+  if (filter === "not100") return cat !== "perfect" && cat !== "none";
+  return cat === filter;
+}
+
+function RelCell({actual, plan, fs}) {
+  const cat = relCategory(actual, plan);
+  const rel = plan > 0 ? (actual / plan) * 100 : null;
+  const txt = rel === null ? "—" : rel.toFixed(1);
+  return <td style={{ padding:"2px 6px", border:"1px solid #d4d0c8", textAlign:"center", fontSize:fs, ...relStyle(cat) }}>{txt}</td>;
+}
+
+// ── Data generation ────────────────────────────────────────────────────────────
+function getDates() {
+  const result = [];
+  for (let i = 7; i >= 0; i--) {
+    const d = new Date("2026-05-12T00:00:00");
+    d.setDate(d.getDate() - i);
+    result.push(d.toISOString().slice(0, 10));
+  }
+  return result;
+}
+const ALL_DATES = getDates();
+
+function isWeekend(s) { return [0,6].includes(new Date(s+"T00:00:00").getDay()); }
+function dayName(s)   { return DAY_NAMES[new Date(s+"T00:00:00").getDay()]; }
+function fmtDate(s)   { const [y,m,d]=s.split("-"); return `${+d}.${+m}.${y}`; }
+
+function makeRand(seed) {
+  let s = seed >>> 0;
+  return () => { s = Math.imul(1664525,s)+1013904223>>>0; return s/0x100000000; };
+}
+const rand = makeRand(12345);
+
+const RAW_DATA = {};
+ALL_DATES.forEach(date => {
+  RAW_DATA[date] = {};
+  SHIFTS.forEach(sh => {
+    RAW_DATA[date][sh.id] = {};
+    LINES.forEach(line => {
+      if (isWeekend(date)) {
+        RAW_DATA[date][sh.id][line] = { actual:0, plan:0 };
+      } else if (sh.id==="S3" && rand()>0.55) {
+        RAW_DATA[date][sh.id][line] = { actual:0, plan:0 };
+      } else {
+        const plan = Math.floor(rand()*200+350);
+        RAW_DATA[date][sh.id][line] = { actual: Math.round(plan*(0.72+rand()*0.55)), plan };
+      }
+    });
+  });
+});
+
+// Force exactly 100% example: 2026-05-06, S1, Line 3
+RAW_DATA["2026-05-06"]["S1"]["Line 3"] = { actual: 450, plan: 450 };
+// Force a "plan too low" example: 2026-05-07, S2, Line 1
+RAW_DATA["2026-05-07"]["S2"]["Line 1"] = { actual: 560, plan: 420 };
+
+const lineColors  = ["#5a7a3a","#7a5a3a","#3a5a7a","#6a3a7a","#3a7a6a","#7a3a5a","#5a3a7a","#7a6a3a","#3a6a7a","#6a7a3a"];
+const shiftColors = { S1:"#1a5276", S2:"#7e5109", S3:"#1a6637" };
+
+// ── DETAILED VIEW ──────────────────────────────────────────────────────────────
+function DetailedView({dates, dispLines, dispShifts, grandActual, relFilter, fs}) {
+  const TH = (bg="#3d3d3d", extra={}) => ({ padding:"3px 6px", border:"1px solid #555", textAlign:"center", fontSize:fs-1, fontWeight:"bold", position:"sticky", top:0, zIndex:2, color:"#fff", background:bg, ...extra });
+  const TD = (extra={}) => ({ padding:"2px 6px", border:"1px solid #d4d0c8", textAlign:"center", fontSize:fs, ...extra });
+  const TDL = (extra={}) => ({ padding:"2px 6px", border:"1px solid #d4d0c8", textAlign:"left", fontSize:fs, ...extra });
+
+  const rows = [];
+  dates.forEach(date => {
+    const wknd = isWeekend(date);
+    const isToday = date === "2026-05-12";
+
+    if (wknd) {
+      if (relFilter !== "all") return;
+      rows.push(<tr key={date} style={{background:"#eeeeee",color:"#999"}}>
+        <td style={TDL()}><b>{fmtDate(date)}</b>, {dayName(date)} — Weekend</td>
+        <td style={TD()}>—</td>
+        {dispLines.map(l=><td key={l} style={TD()}>0 (0)</td>)}
+        <td style={TD()}>0</td><td style={TD()}>0</td>
+        <td style={TD({background:"#eeeeee",color:"#aaa"})}>—</td>
+      </tr>);
+      return;
+    }
+
+    let dayA=0, dayP=0;
+    const dLA={}, dLP={};
+    dispLines.forEach(l=>{dLA[l]=0; dLP[l]=0;});
+
+    const shiftRows = [];
+    dispShifts.forEach((sh, si) => {
+      let rowA=0, rowP=0;
+      dispLines.forEach(l => {
+        const v = RAW_DATA[date][sh.id][l];
+        rowA+=v.actual; rowP+=v.plan;
+        dLA[l]+=v.actual; dLP[l]+=v.plan;
+      });
+      dayA+=rowA; dayP+=rowP;
+      const cat = relCategory(rowA, rowP);
+      if (!relPasses(cat, relFilter)) return;
+      const bg = isToday?"#ffffc0":si%2===0?"#fff":"#f5f4ef";
+      shiftRows.push({sh, si, rowA, rowP, cat, bg});
+    });
+
+    const dayCat = relCategory(dayA, dayP);
+    const dayOk = relPasses(dayCat, relFilter);
+    if (shiftRows.length===0 && !dayOk) return;
+
+    shiftRows.forEach(({sh, rowA, rowP, bg}, idx) => {
+      rows.push(<tr key={`${date}-${sh.id}`} style={{background:bg}}>
+        <td style={TDL()}>
+          {idx===0 ? <><b>{fmtDate(date)}</b>, {dayName(date)}
+            {isToday && <span style={{marginLeft:4,background:"#ff0",padding:"0 2px",fontSize:fs-2,fontWeight:"bold"}}>TODAY</span>}
+          </> : ""}
+        </td>
+        <td style={TD({color:shiftColors[sh.id],fontWeight:"bold"})}>{sh.label}</td>
+        {dispLines.map((l,li) => {
+          const {actual,plan} = RAW_DATA[date][sh.id][l];
+          return <td key={l} style={TD({color:lineColors[li]})}>{actual} ({plan})</td>;
+        })}
+        <td style={TD({fontWeight:"bold"})}>{rowA}</td>
+        <td style={TD({color:"#666"})}>{rowP}</td>
+        <RelCell actual={rowA} plan={rowP} fs={fs}/>
+      </tr>);
+    });
+
+    if (dayOk) {
+      rows.push(<tr key={`${date}-dt`} style={{background:"#dce6f1",fontWeight:"bold"}}>
+        <td style={TDL({fontWeight:"bold"})}>Day Total</td>
+        <td style={TD({fontStyle:"italic"})}>All selected</td>
+        {dispLines.map((l,li) => <td key={l} style={TD({color:lineColors[li],fontWeight:"bold"})}>{dLA[l]} ({dLP[l]})</td>)}
+        <td style={TD({fontWeight:"bold"})}>{dayA}</td>
+        <td style={TD({color:"#666"})}>{dayP}</td>
+        <RelCell actual={dayA} plan={dayP} fs={fs}/>
+      </tr>);
+    }
+  });
+
+  const noData = <tr><td colSpan={dispLines.length+5} style={{padding:16,textAlign:"center",color:"#888",fontSize:fs}}>No rows match the Reliability filter.</td></tr>;
+
+  return (
+    <table style={{borderCollapse:"collapse",whiteSpace:"nowrap",minWidth:"100%",fontSize:fs}}>
+      <thead><tr>
+        <th style={TH("#3d3d3d",{textAlign:"left",width:125})}>Date</th>
+        <th style={TH("#3d3d3d")}>Shift</th>
+        {dispLines.map((l,i) => <th key={l} style={TH(lineColors[i])}>{l}<br/><span style={{fontSize:fs-2,fontWeight:"normal"}}>act (plan)</span></th>)}
+        <th style={TH("#1a3a5c")}>Total<br/>Production</th>
+        <th style={TH("#1a3a5c")}>Plan</th>
+        <th style={TH("#1a3a5c")}>Reliability %</th>
+      </tr></thead>
+      <tbody>
+        {rows.length>0 ? rows : noData}
+        <tr style={{background:"#d4d0c8",fontWeight:"bold",borderTop:"2px solid #888"}}>
+          <td style={TDL()}>GRAND TOTAL</td>
+          <td style={TD()}>All</td>
+          {dispLines.map(l=><td key={l} style={TD()}>—</td>)}
+          <td style={TD()}>{grandActual.a}</td>
+          <td style={TD({color:"#666"})}>{grandActual.p}</td>
+          <RelCell actual={grandActual.a} plan={grandActual.p} fs={fs}/>
+        </tr>
+      </tbody>
+    </table>
+  );
+}
+
+// ── COMPACT VIEW ───────────────────────────────────────────────────────────────
+function CompactView({dates, dispLines, dispShifts, grandActual, relFilter, fs}) {
+  const TH = (bg="#3d3d3d", extra={}) => ({ padding:"3px 6px", border:"1px solid #555", textAlign:"center", fontSize:fs-1, fontWeight:"bold", position:"sticky", top:0, zIndex:2, color:"#fff", background:bg, ...extra });
+  const TD = (extra={}) => ({ padding:"2px 6px", border:"1px solid #d4d0c8", textAlign:"center", fontSize:fs, ...extra });
+  const TDL = (extra={}) => ({ padding:"2px 6px", border:"1px solid #d4d0c8", textAlign:"left", fontSize:fs, ...extra });
+
+  const rows = [];
+  dates.forEach((date, di) => {
+    const wknd = isWeekend(date);
+    const isToday = date === "2026-05-12";
+    let tA=0, tP=0;
+    dispLines.forEach(l => dispShifts.forEach(sh => { tA+=RAW_DATA[date][sh.id][l].actual; tP+=RAW_DATA[date][sh.id][l].plan; }));
+    const cat = relCategory(tA, tP);
+    if (wknd && relFilter !== "all") return;
+    if (!wknd && !relPasses(cat, relFilter)) return;
+    const bg = isToday?"#ffffc0":wknd?"#eeeeee":di%2===0?"#fff":"#f5f4ef";
+    rows.push(<tr key={date} style={{background:bg,color:wknd?"#999":"#000"}}>
+      <td style={TDL()}>
+        <b>{fmtDate(date)}</b>, {dayName(date)}
+        {isToday && <span style={{marginLeft:4,background:"#ff0",padding:"0 2px",fontSize:fs-2,fontWeight:"bold"}}>TODAY</span>}
+      </td>
+      {dispLines.map((l,li) => dispShifts.map(sh => {
+        const {actual,plan} = RAW_DATA[date][sh.id][l];
+        return <td key={`${l}-${sh.id}`} style={TD({color:wknd?"#aaa":lineColors[li]})}>{actual}({plan})</td>;
+      }))}
+      <td style={TD({fontWeight:"bold"})}>{tA}</td>
+      <td style={TD({color:"#666"})}>{tP}</td>
+      <RelCell actual={tA} plan={tP} fs={fs}/>
+    </tr>);
+  });
+
+  const noData = <tr><td colSpan={dispLines.length*dispShifts.length+4} style={{padding:16,textAlign:"center",color:"#888",fontSize:fs}}>No rows match the Reliability filter.</td></tr>;
+
+  return (
+    <table style={{borderCollapse:"collapse",whiteSpace:"nowrap",minWidth:"100%",fontSize:fs}}>
+      <thead>
+        <tr>
+          <th style={TH("#3d3d3d",{textAlign:"left",width:125})} rowSpan={2}>Date</th>
+          {dispLines.map((l,li) => <th key={l} style={TH(lineColors[li])} colSpan={dispShifts.length}>{l}</th>)}
+          <th style={TH("#1a3a5c")} rowSpan={2}>Total<br/>Production</th>
+          <th style={TH("#1a3a5c")} rowSpan={2}>Plan</th>
+          <th style={TH("#1a3a5c")} rowSpan={2}>Reliability %</th>
+        </tr>
+        <tr>
+          {dispLines.map((l,li) => dispShifts.map(sh => (
+            <th key={`${l}-${sh.id}`} style={TH(lineColors[li],{fontSize:fs-2,fontWeight:"normal",opacity:0.85})}>
+              {sh.id}<br/><span style={{fontSize:fs-3}}>act(plan)</span>
+            </th>
+          )))}
+        </tr>
+      </thead>
+      <tbody>
+        {rows.length>0 ? rows : noData}
+        <tr style={{background:"#d4d0c8",fontWeight:"bold",borderTop:"2px solid #888"}}>
+          <td style={TDL()}>GRAND TOTAL</td>
+          {dispLines.map(l => dispShifts.map(sh => <td key={`${l}-${sh.id}`} style={TD()}>—</td>))}
+          <td style={TD()}>{grandActual.a}</td>
+          <td style={TD({color:"#666"})}>{grandActual.p}</td>
+          <RelCell actual={grandActual.a} plan={grandActual.p} fs={fs}/>
+        </tr>
+      </tbody>
+    </table>
+  );
+}
+
+// ── MAIN APP ───────────────────────────────────────────────────────────────────
+function App() {
+  const [dateFrom,     setDateFrom]     = useState("2026-05-05");
+  const [dateTo,       setDateTo]       = useState("2026-05-12");
+  const [selShifts,    setSelShifts]    = useState(new Set(["S1","S2","S3"]));
+  const [selLines,     setSelLines]     = useState(new Set(LINES));
+  const [showWeekends, setShowWeekends] = useState(true);
+  const [fontSize,     setFontSize]     = useState(11);
+  const [relFilter,    setRelFilter]    = useState("all");
+  const [viewMode,     setViewMode]     = useState("auto");
+  const [applied, setApplied] = useState({
+    dateFrom:"2026-05-05", dateTo:"2026-05-12",
+    shifts:new Set(["S1","S2","S3"]), lines:new Set(LINES),
+    showWeekends:true, relFilter:"all"
+  });
+
+  const apply = () => setApplied({dateFrom,dateTo,shifts:new Set(selShifts),lines:new Set(selLines),showWeekends,relFilter});
+  const reset = () => {
+    setDateFrom("2026-05-05"); setDateTo("2026-05-12");
+    setSelShifts(new Set(["S1","S2","S3"])); setSelLines(new Set(LINES));
+    setShowWeekends(true); setRelFilter("all"); setFontSize(11);
+    setApplied({dateFrom:"2026-05-05",dateTo:"2026-05-12",shifts:new Set(["S1","S2","S3"]),lines:new Set(LINES),showWeekends:true,relFilter:"all"});
+  };
+
+  const toggleShift = id => { const n=new Set(selShifts); n.has(id)?(n.size>1&&n.delete(id)):n.add(id); setSelShifts(n); };
+  const toggleLine  = l  => { const n=new Set(selLines);  n.has(l)?(n.size>1&&n.delete(l)):n.add(l);   setSelLines(n); };
+
+  const dispLines  = LINES.filter(l=>applied.lines.has(l));
+  const dispShifts = SHIFTS.filter(s=>applied.shifts.has(s.id));
+  const autoMode   = dispLines.length<=2?"compact":"detailed";
+  const effectiveMode = viewMode==="auto"?autoMode:viewMode;
+
+  const dates = useMemo(()=>ALL_DATES.filter(d=>{
+    if (d<applied.dateFrom||d>applied.dateTo) return false;
+    if (!applied.showWeekends&&isWeekend(d)) return false;
+    return true;
+  }),[applied]);
+
+  const grandActual = useMemo(()=>{
+    let a=0,p=0;
+    dates.forEach(d=>{if(!isWeekend(d))dispShifts.forEach(sh=>dispLines.forEach(l=>{a+=RAW_DATA[d][sh.id][l].actual;p+=RAW_DATA[d][sh.id][l].plan;}));});
+    return {a,p};
+  },[dates,dispShifts,dispLines]);
+
+  const sideBtn   = {border:"1px solid #888",background:"linear-gradient(to bottom,#f0ede4,#d4d0c8)",padding:"2px 8px",fontSize:11,cursor:"pointer"};
+  const activeBtn = on => ({border:"1px solid #888",background:on?"#1a5276":"linear-gradient(to bottom,#f0ede4,#d4d0c8)",color:on?"#fff":"#000",padding:"3px 10px",fontSize:11,cursor:"pointer",fontWeight:on?"bold":"normal"});
+  const sec = {fontWeight:"bold",marginBottom:4,borderBottom:"1px solid #aca899",paddingBottom:2,fontSize:11};
+  const chk = {display:"flex",alignItems:"center",gap:4,marginBottom:3,cursor:"pointer",fontSize:11};
+
+  const relOptColor = v => v==="critical"?"#9c0006":v==="warn"?"#9c6500":v==="perfect"?"#276221":v==="over"?"#1f4e79":"#000";
+
+  return (
+    <div style={{fontFamily:"Arial,sans-serif",fontSize:fontSize,background:"#f0f0f0",height:"100vh",display:"flex",flexDirection:"column",color:"#000"}}>
+      <div style={{background:"#d4d0c8",borderBottom:"2px solid #888",padding:"3px 8px",fontWeight:"bold",fontSize:12,flexShrink:0}}>
+        Aggregated Families Planning
+      </div>
+
+      <div style={{display:"flex",flex:1,overflow:"hidden"}}>
+        {/* SIDEBAR */}
+        <div style={{width:220,background:"#ece9d8",borderRight:"1px solid #aca899",padding:8,overflowY:"auto",flexShrink:0}}>
+          <div style={{display:"flex",gap:3,marginBottom:8,flexWrap:"wrap"}}>
+            <button style={sideBtn} onClick={apply}>Apply</button>
+            <button style={sideBtn} onClick={reset}>Reset</button>
+          </div>
+
+          <div style={{marginBottom:8}}>
+            <div style={sec}>Filter</div>
+            <label style={{display:"block",fontSize:10,marginBottom:2}}>Date From</label>
+            <input type="date" value={dateFrom} onChange={e=>setDateFrom(e.target.value)} style={{width:"100%",border:"1px solid #7f9db9",padding:"2px 3px",fontSize:10,height:20}}/>
+            <div style={{height:5}}/>
+            <label style={{display:"block",fontSize:10,marginBottom:2}}>Date To</label>
+            <input type="date" value={dateTo} onChange={e=>setDateTo(e.target.value)} style={{width:"100%",border:"1px solid #7f9db9",padding:"2px 3px",fontSize:10,height:20}}/>
+          </div>
+
+          <div style={{marginBottom:8}}>
+            <div style={sec}>Shifts</div>
+            {SHIFTS.map(sh=>(
+              <div key={sh.id} style={chk} onClick={()=>toggleShift(sh.id)}>
+                <input type="checkbox" checked={selShifts.has(sh.id)} onChange={()=>{}}/>
+                <span style={{color:shiftColors[sh.id],fontWeight:"bold"}}>{sh.label}</span>
+              </div>
+            ))}
+          </div>
+
+          <div style={{marginBottom:8}}>
+            <div style={{...sec,display:"flex",justifyContent:"space-between"}}>
+              <span>Lines</span>
+              <span style={{fontSize:9,display:"flex",gap:6}}>
+                <span style={{color:"#1a5276",cursor:"pointer",textDecoration:"underline"}} onClick={()=>setSelLines(new Set(LINES))}>All</span>
+                <span style={{color:"#9c0006",cursor:"pointer",textDecoration:"underline"}} onClick={()=>setSelLines(new Set([LINES[0]]))}>None</span>
+              </span>
+            </div>
+            {LINES.map((l,i)=>(
+              <div key={l} style={chk} onClick={()=>toggleLine(l)}>
+                <input type="checkbox" checked={selLines.has(l)} onChange={()=>{}}/>
+                <span style={{color:lineColors[i]}}>{l}</span>
+              </div>
+            ))}
+          </div>
+
+          {/* Reliability Filter */}
+          <div style={{marginBottom:8}}>
+            <div style={sec}>Reliability Filter</div>
+
+            {/* Legend inside filter */}
+            <div style={{fontSize:9,marginBottom:6,display:"flex",flexDirection:"column",gap:2}}>
+              <div style={{display:"flex",alignItems:"center",gap:4}}>
+                <div style={{width:30,height:10,background:"#c6efce",border:"1px solid #ccc"}}/>
+                <span style={{color:"#276221"}}>= 100% Perfect ✓</span>
+              </div>
+              <div style={{display:"flex",alignItems:"center",gap:4}}>
+                <div style={{width:30,height:10,background:"#bdd7ee",border:"1px solid #ccc"}}/>
+                <span style={{color:"#1f4e79"}}>{">"} 100% Plan too low ↑</span>
+              </div>
+              <div style={{display:"flex",alignItems:"center",gap:4}}>
+                <div style={{width:30,height:10,background:"#ffeb9c",border:"1px solid #ccc"}}/>
+                <span style={{color:"#9c6500"}}>90–99% Warning ⚠</span>
+              </div>
+              <div style={{display:"flex",alignItems:"center",gap:4}}>
+                <div style={{width:30,height:10,background:"#ffc7ce",border:"1px solid #ccc"}}/>
+                <span style={{color:"#9c0006"}}>{"<"} 90% Critical ✗</span>
+              </div>
+            </div>
+
+            {REL_FILTER_OPTIONS.map(opt=>(
+              <div key={opt.value} style={{...chk,alignItems:"flex-start"}} onClick={()=>setRelFilter(opt.value)}>
+                <input type="radio" checked={relFilter===opt.value} onChange={()=>{}} style={{marginTop:2}}/>
+                <span style={{color:relOptColor(opt.value),fontWeight:relFilter===opt.value?"bold":"normal"}}>{opt.label}</span>
+              </div>
+            ))}
+          </div>
+
+          {/* Font Size */}
+          <div style={{marginBottom:8}}>
+            <div style={sec}>Font Size</div>
+            <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:5}}>
+              <button style={{...sideBtn,padding:"1px 8px",fontSize:14,lineHeight:1}} onClick={()=>setFontSize(f=>Math.max(8,f-1))}>−</button>
+              <span style={{fontSize:11,minWidth:38,textAlign:"center",fontWeight:"bold"}}>{fontSize} pt</span>
+              <button style={{...sideBtn,padding:"1px 8px",fontSize:14,lineHeight:1}} onClick={()=>setFontSize(f=>Math.min(16,f+1))}>+</button>
+            </div>
+            <div style={{display:"flex",gap:3,flexWrap:"wrap"}}>
+              {FONT_SIZES.map(f=>(
+                <button key={f} onClick={()=>setFontSize(f)} style={{border:"1px solid #888",background:fontSize===f?"#1a5276":"#f0ede4",color:fontSize===f?"#fff":"#000",padding:"1px 6px",fontSize:10,cursor:"pointer"}}>
+                  {f}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div style={{marginBottom:8}}>
+            <div style={sec}>Options</div>
+            <div style={chk} onClick={()=>setShowWeekends(v=>!v)}>
+              <input type="checkbox" checked={showWeekends} onChange={()=>{}}/>
+              <span>Show weekends</span>
+            </div>
+          </div>
+
+          <div style={{fontSize:9,background:"#dce6f1",border:"1px solid #7f9db9",padding:5,borderRadius:2}}>
+            <b>Auto-switch:</b><br/>≤ 2 lines → Compact<br/>3+ lines → Detailed<br/>
+            <span style={{color:"#555"}}>({dispLines.length} selected → <b>{autoMode}</b>)</span>
+          </div>
+        </div>
+
+        {/* CONTENT */}
+        <div style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden",background:"#fff"}}>
+          <div style={{background:"#ece9d8",borderBottom:"1px solid #aca899",padding:"4px 8px",display:"flex",alignItems:"center",gap:6,flexWrap:"wrap",flexShrink:0}}>
+            <span style={{fontWeight:"bold",marginRight:2,fontSize:11}}>View:</span>
+            <button style={activeBtn(viewMode==="auto")}     onClick={()=>setViewMode("auto")}>Auto ({autoMode})</button>
+            <button style={activeBtn(viewMode==="detailed")} onClick={()=>setViewMode("detailed")}>Detailed</button>
+            <button style={activeBtn(viewMode==="compact")}  onClick={()=>setViewMode("compact")}>Compact</button>
+            <span style={{marginLeft:8,fontSize:10,color:"#555"}}>
+              {effectiveMode==="detailed"?"↕ One row per shift · best for 3+ lines":"↔ One row per day · best for 1–2 lines"}
+            </span>
+            {applied.relFilter!=="all" && (
+              <span style={{marginLeft:6,background:"#fff3cd",border:"1px solid #ffc107",padding:"1px 7px",fontSize:10,color:"#856404",borderRadius:2}}>
+                ⚠ Filter: {REL_FILTER_OPTIONS.find(o=>o.value===applied.relFilter)?.label}
+              </span>
+            )}
+          </div>
+
+          <div style={{flex:1,overflow:"auto"}}>
+            {effectiveMode==="detailed"
+              ?<DetailedView dates={dates} dispLines={dispLines} dispShifts={dispShifts} grandActual={grandActual} relFilter={applied.relFilter} fs={fontSize}/>
+              :<CompactView  dates={dates} dispLines={dispLines} dispShifts={dispShifts} grandActual={grandActual} relFilter={applied.relFilter} fs={fontSize}/>
+            }
+          </div>
+
+          {/* Status bar */}
+          <div style={{background:"#d4d0c8",borderTop:"1px solid #aca899",padding:"2px 8px",fontSize:10,color:"#444",flexShrink:0,display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+            <span>{dates.length} days · {dispLines.length} lines · {dispShifts.length} shifts · Font: {fontSize}pt</span>
+            <span>|</span>
+            <span style={{background:"#c6efce",color:"#276221",padding:"0 5px"}}>= 100% Perfect</span>
+            <span style={{background:"#bdd7ee",color:"#1f4e79",padding:"0 5px"}}>&gt; 100% Plan too low</span>
+            <span style={{background:"#ffeb9c",color:"#9c6500",padding:"0 5px"}}>90–99% Warning</span>
+            <span style={{background:"#ffc7ce",color:"#9c0006",padding:"0 5px"}}>&lt; 90% Critical</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
