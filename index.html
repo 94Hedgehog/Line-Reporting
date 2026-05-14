@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Aggregated Families Planning</title>
+<title>PLAN DEMO</title>
 <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
@@ -232,7 +232,7 @@ function CompactView({dates,dispLines,dispShifts,grandActual,relFilter,fs}) {
 
 // ── BY-SHIFT VIEW — rows = shift→line, cols = dates ───────────────────────────
 // Each shift is a block header, all its lines listed below, then a shift total row.
-// Columns are dates. This mirrors the original VIZ layout.
+// Columns are dates. This mirrors the original layout.
 function ByShiftView({dates,dispLines,dispShifts,grandActual,relFilter,fs}) {
   const TH=(bg="#3d3d3d",ex={})=>({padding:"3px 5px",border:"1px solid #555",textAlign:"center",fontSize:fs-1,fontWeight:"bold",position:"sticky",top:0,zIndex:2,color:"#fff",background:bg,...ex});
   const TD=(ex={})=>({padding:"2px 5px",border:"1px solid #d4d0c8",textAlign:"center",fontSize:fs,...ex});
@@ -390,7 +390,7 @@ function ByShiftView({dates,dispLines,dispShifts,grandActual,relFilter,fs}) {
   );
 }
 
-// ── ORIGINAL VIEW — rows = dates, cols = shift×line (exact VIZ layout) ────────
+// ── ORIGINAL VIEW — rows = dates, cols = shift×line ────────
 function OriginalView({dates,dispLines,dispShifts,grandActual,relFilter,fs}) {
   const TH=(bg="#3d3d3d",ex={})=>({padding:"3px 5px",border:"1px solid #555",textAlign:"center",fontSize:fs-1,fontWeight:"bold",position:"sticky",top:0,zIndex:2,color:"#fff",background:bg,...ex});
   const TD=(ex={})=>({padding:"2px 5px",border:"1px solid #d4d0c8",textAlign:"center",fontSize:fs,...ex});
@@ -530,7 +530,7 @@ function App() {
     detailed: "↕ One row per shift · best for 3–5 lines",
     compact:  "↔ One row per day · best for 1–2 lines",
     byshift:  "⊞ Grouped by shift · each person sees their block",
-    original: "⊟ Original VIZ layout · rows = dates, cols = shift × line",
+    original: "⊟ Original layout · rows = dates, cols = shift × line",
   };
 
   return(
